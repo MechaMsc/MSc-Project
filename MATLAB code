@@ -1,0 +1,204 @@
+clear all
+clc
+delete(instrfindall); % it is a good practice that we call this
+
+%%%%%%%%%%%%%%% White noise and laser set up %%%%%%%%%%%%%%%%%%%%
+
+% here we define the main communication parameters
+dq = daq("ni");
+Fs = 3200;%change sample rate based on test frequency
+dq.Rate = Fs;
+    
+addinput(dq,"cDAQ1Mod2","ai0","Voltage");%add and remove channels as needed
+%   addinput(dq,"cDAQ2Mod5","ai1","iepe");%check which card slot using
+%   addinput(dq,"cDAQ2Mod5","ai2","iepe");%
+    
+    
+addoutput(dq,'cDAQ1Mod1','ao2','Voltage');%shaker input
+% ao1: use holes 3 and 4, ao0: use holes 1 and 2
+   
+nfft = 2^12; %adjust as needed
+%     
+%     %white noise generation
+L = 5;%length of measurement, seconds
+A = -8;%amplitude of shaker signal, dBW
+t = linspace(0, L, Fs*L);%time vector
+Out = wgn(round(L*Fs),1,A);%white noise signal
+    
+
+%%%%%%%%%%%%%%%%%%%%%%%%% Arduino Setup %%%%%%%%%%%%%%%%%%%%%%%%%%
+  
+InputBufferSize = 8;
+Timeout = 0.5;
+arduino=serialport('COM4',115200,'DataBits',8);
+set(arduino , 'InputBufferSize', InputBufferSize);
+set(arduino , 'Timeout', Timeout);
+configureTerminator(arduino,"CR/LF");
+
+
+% Define some other parameter, check the MATLAB help for more details 
+. 
+
+flush(arduino);
+% arduino.UserData = struct("Data",[],"Count",1);
+
+fopen(arduino); % initiate arduino communication
+pause(2) % must be 2 or greater or no value will show up
+
+%%%%%%%%%%%%%%%%%%%% Stepper Motor Parameters %%%%%%%%%%%%%%%%%%%%
+
+
+%%%%% USER INPUT VARIABLES%%%%%%%
+
+x_length = 70; % Measurement range
+xpoints_measuring = 4; % number of measurement along axis
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+xwidth = string(x_length);
+ % number of points measured in x axis input
+num_of_divsx = xpoints_measuring - 1; 
+xdiv = x_length/num_of_divsx;
+
+% To ensure that the input string has two bits instead of one to read
+if num_of_divsx < 10
+    num_points = append('0',string(num_of_divsx));
+else
+    num_points = string(num_of_divsx);
+end
+
+
+%% used when user wishes to include different axes ranges for future work
+% y_length = 110; %range in y axis input
+% ywidth = string(y_length);
+% ypoints_measuring = 10; % number points measured in y axis input
+% num_of_divsy = ypoints_measuring -1;
+% ydiv = y_length/num_of_divsy;
+
+
+endmarker = '>'; % inform arduino end of string
+
+instr = append(num_points,xwidth,endmarker); % combined string send to Arduino
+
+fprintf(arduino,instr)
+
+% Let us see did Arduino microcontroller receive the sequence (only the number of steps)
+length_per_xdiv =fscanf(arduino,'%f')
+
+num_of_xdiv=fscanf(arduino,'%f')
+
+steps_per_xdiv=fscanf(arduino,'%f')
+
+% wait = '0';
+% run = '1';
+
+% % timex = 0.6 + 0.277*xdiv
+% % timey = 0.74 + 0.287*xdiv
+
+timex = 0.6 + 0.0007*xdiv/0.0025
+% (accel + decel) + 700 microseconds per step * (# of steps per xdivision)
+timey = 0.74 +  + 1.036*0.0007*xdiv/0.0025
+timey = 0.74 +  + 1.23*0.0007*xdiv/0.0025
+% y axis takes approximately 3.6% longer due to weight
+% extra second take for 
+
+tempTimex = 0.304*xdiv
+tempTimey = 0.310*xdiv + 0.3
+combinedTime = tempTimex + tempTimey;
+
+% Used to measure exact time of motion
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% pause(tempTimex);
+% xScanTime = fscanf(arduino,'%f');
+% xTime = xScanTime/1000000
+% flush(arduino);
+% pause(tempTimey);
+% 
+% yScanTime = fscanf(arduino,'%f');
+% yTime = yScanTime/1000
+% pause(combinedTime);
+
+% flush(arduino);
+% pause(combinedTime);
+% xyScanTime = fscanf(arduino,'%f %f' );
+% xTime = xyScanTime(1)/1000
+% yTime = xyScanTime(2)/1000
+
+%pause(combinedTime);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% xTime = 4.07575 +0.2;
+% yTime = 4.13492 +0.6;
+
+
+
+
+% Start of Beths code
+
+%%%%%%%%%%%%%%%%%%%%%%% Noise and Laser Call %%%%%%%%%%%%%%%%%%%%%%%%%
+
+z = (xpoints_measuring)^2;
+
+for r = 1:z
+
+%     while true
+%         if arduino.BytesAvailable > 0
+%             response = fscanf(arduino, '%s');
+%             if strcmp(response, 'R')
+    
+                data = readwrite(dq,Out); %take measurement
+                Time = data.Time; %extract time data
+                laser = data.cDAQ1Mod2_ai0*5e-3; %extract laser data
+                
+                [S_PSD, freq] = pwelch(Out,nfft,nfft/2,nfft,Fs); %shaker signal psd
+                L_CPSD = cpsd(laser,Out,nfft,nfft/2,nfft,Fs); %laser cpsd
+                L_FRF = L_CPSD./S_PSD; %laser FRF
+                L_coh = mscohere(laser,Out,nfft,nfft/2,nfft,Fs); %laser coherence
+                
+            %         x_pos = 1;%update with x location
+            %         y_pos = 1;%update with y location
+                
+                folder = 'C:\Users\Lee Varela\OneDrive\Documents\MSc_Final_Project_Notes\Arduino Code\MATLAB_code\'; %update with folder location
+                subfolder = append('plate_run1_',num2str(r));
+                mkdir(folder,subfolder) %makes folder for laser location data
+                
+                data = struct('laser_td',laser,'Time',Time,'freq',freq,'laser_FRF',L_FRF,'coh',L_coh,'noise',Out);
+                save(append(folder,subfolder,'\data.mat'),'data');
+                sprintf('Measurement %d taken',r)
+            
+                is_multiple = (num_of_divsx*round(double(z)/num_of_divsx)==z);
+                if is_multiple == 1 %moving in y
+                    pause(yTime);
+                    %was 1`4
+                else
+                    pause(xTime);
+                end
+                %motorTime = fscanf(arduino,'%f')
+%                 break; % Arduino is ready
+%             end
+%         end
+%     end    
+    
+%     fprintf(arduino, 'A');
+
+%     pause(1);
+
+    
+
+    
+% 
+%     while arduino.BytesAvailable == 0
+%         % Wait for data from Arduino
+%     end
+% 
+%     trigger = fscanf(arduino, '%d');
+
+
+
+
+end
+
+
+clear arduino
+%%%%%%%%%%%%%%%%%%%%%%% End %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
