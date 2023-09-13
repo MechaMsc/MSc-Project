@@ -1,0 +1,650 @@
+#include <TimerOne.h>
+
+#define Motor1_stp 2 
+#define Motor1_dir 5 
+
+#define Motor2_stp 3
+#define Motor2_dir 6 
+
+#define Motor3_stp 4
+#define Motor3_dir 7 
+
+//#define limitSwitch 8
+
+#define BaudRate 115200
+
+// int ledState = LOW;        // tracks the current state of LED
+// int lastButtonState;        // the previous state of button
+// int currentButtonState;
+// int buttonState = LOW;
+// int oldButtonState = LOW;
+
+unsigned long xstartMicros;
+unsigned long ystartMicros;
+unsigned long xendMicros;
+unsigned long yendMicros;
+unsigned long xtimeDiff;
+unsigned long ytimeDiff;
+
+
+float Div = 0;              // Number of divisions
+float distance=0;           // Overall distance across axis
+float dis = 0;              // Distance per division
+        
+char endMarker='>'; 
+
+const int numChar=8; 
+const int numChar2=8;        // the number of characters we want to receive 
+char receivedChar[numChar];
+char receivedChar2[numChar2];  // the array for received data
+boolean newData=false; // For x 
+boolean newData2=false; // For y
+
+///////////////////////// Setup Arduino ///////////////////////////////////
+
+void setup() {
+  pinMode(Motor1_stp, OUTPUT); // Actuator in x direction
+  pinMode(Motor1_dir, OUTPUT);
+    
+  pinMode(Motor2_stp, OUTPUT); // Actuator in y direction
+  pinMode(Motor2_dir, OUTPUT);
+
+  pinMode(Motor3_stp, OUTPUT); // Actuator in y direction
+  pinMode(Motor3_dir, OUTPUT);
+
+  //pinMode(limitSwitch, INPUT);
+  //limitSwitch.setDebounceTime(50);
+  //pinMode(13, OUTPUT);
+
+  // currentButtonState = digitalRead(limitSwitch);
+  // Timer1.initialize(100000000); 
+  // Timer1.attachInterrupt(timingFcnx);
+  // Timer1.attachInterrupt(timingFcny);
+
+  Serial.begin(BaudRate); // Set at 115200 
+  Serial.setTimeout(30);
+}
+// NEMA_23 has 200 steps per revolution. Stepper motor driver set to 1/16 microstep
+// therefore 1 rev = 3200 steps
+
+/////////////////////// Motor Movement & Acceleration Functions ///////////////////////////////
+
+// full roation = 1600 steps, which is 8mm
+//#define highSpeed 0.5
+// c_0 = (1 / t_t)*(2*alpha[angle] / omega_dot[accel])^1/2
+// c_n = c_n-1[lastDelay] - (2*c_n-1 / 4*n + 1) x
+//c_0 & n are acceleration. If c_0 changes, a new n needs to be calculated
+
+// Function takes twice as many steps as constantSpeed function
+// as its accelerating with said steps and decelerating with said steps 
+#define accelsteps 900 // dont exceed 1000, motors stall for some reason
+
+
+ // Function to move in x direction by STEPSX number of steps
+void moveX(long STEPSX) {
+  int delays[accelsteps];
+  //float angle = 1;
+  //float accel = 0.01;
+  float c0 = 18000;  // 2000 * sqrt( 2 * angle / accel ) * 0.67703; = 12340.6 for angle 1, accel 0.02
+  // changes slope of delay against steps graph
+  float lastDelay = 0;
+  int highSpeed = 700; // speed cap
+  for (int i = 0; i < accelsteps; i++) {
+    float d = c0;
+    if ( i > 0 )
+      d = lastDelay - (2 * lastDelay) / (4 * i + 1);
+    if ( d < highSpeed )
+      d = highSpeed;
+    delays[i] = d; //delay between each step
+    lastDelay = d;
+  }
+  
+  // use delays from the array, forward (accel)
+  for (int i = 0; i < accelsteps; i++) {
+    digitalWrite(Motor1_stp , HIGH);
+    delayMicroseconds(delays[i] );    
+    digitalWrite(Motor1_stp, LOW);
+  }
+  // constant speed
+  for (long i = 0; i < (STEPSX) - 2*accelsteps; i++) { // # steps requested - accel & decel steps
+    digitalWrite(Motor1_stp, HIGH); 
+    digitalWrite(Motor1_stp, LOW);   
+  }
+    
+  // use delays from the array, backwards (deaccel)
+  for (int i = 0; i < accelsteps; i++) {
+    digitalWrite(Motor1_stp, HIGH);
+    delayMicroseconds( delays[accelsteps-i-1] );
+    digitalWrite(Motor1_stp, LOW);
+  }
+  
+}
+
+// smallAccelx not in current use
+
+void smallAccelx(int STEPSX) {
+  int delays[STEPSX];
+  //float angle = 1;
+  //float accel = 0.01;
+  float c0 = 15000;  // 2000 * sqrt( 2 * angle / accel ) * 0.67703; = 12340.6 for angle 1, accel 0.02
+  // changes slope of delay against steps graph
+  float lastDelay = 0;
+  int highSpeed = 800; // speed cap
+  for (int i = 0; i < STEPSX; i++) {
+    float d = c0;
+    if ( i > 0 )
+      d = lastDelay - (2 * lastDelay) / (4 * i + 1);
+    if ( d < highSpeed )
+      d = highSpeed;
+    delays[i] = d; //delay between each step
+    lastDelay = d;
+  }
+
+  // use delays from the array, forward (accel)
+  for (int i = 0; i < STEPSX; i++) {
+    digitalWrite(Motor1_stp , HIGH);
+    delayMicroseconds(delays[i] );    
+    digitalWrite(Motor1_stp, LOW);
+  }
+  
+  // use delays from the array, backwards (deaccel)
+  for (int i = 0; i < STEPSX; i++) {
+    digitalWrite(Motor1_stp, HIGH);
+    delayMicroseconds( delays[STEPSX-i-1] );
+    digitalWrite(Motor1_stp, LOW);
+  }
+
+  
+}
+
+void moveY(long STEPSX) {
+  int delays[accelsteps];
+  //float angle = 1;
+  //float accel = 0.01;
+  float c0 = 18000;  // 2000 * sqrt( 2 * angle / accel ) * 0.67703; = 12340.6 for angle 1, accel 0.02
+  // changes slope of delay against steps graph
+  float lastDelay = 0;
+  int highSpeed = 700;
+  for (int i = 0; i < accelsteps; i++) {
+    float d = c0;
+    if ( i > 0 )
+      d = lastDelay - (2 * lastDelay) / (4 * i + 1);
+    if ( d < highSpeed )
+      d = highSpeed;
+    delays[i] = d; //delay between each step
+    lastDelay = d;
+  }
+
+  // use delays from the array, forward (accel)
+  for (int i = 0; i < accelsteps; i++) {
+    digitalWrite(Motor2_stp , HIGH);
+    digitalWrite(Motor3_stp , HIGH);
+    delayMicroseconds(delays[i] );    
+    digitalWrite(Motor2_stp, LOW);
+    digitalWrite(Motor3_stp, LOW);
+  }
+  // constant speed  
+  for (long i = 0; i < STEPSY - 2*accelsteps; i++) { // # steps requested - accel & decel steps
+    digitalWrite(Motor2_stp, HIGH);
+    digitalWrite(Motor3_stp, HIGH);  
+    digitalWrite(Motor2_stp, LOW);
+    digitalWrite(Motor3_stp, LOW);    
+    delayMicroseconds(highSpeed);
+  }
+  // use delays from the array, backwards (deaccel)
+  for (int i = 0; i < accelsteps; i++) {
+    digitalWrite(Motor2_stp , HIGH);
+    digitalWrite(Motor3_stp , HIGH);
+    delayMicroseconds( delays[accelsteps-i-1] );
+    digitalWrite(Motor2_stp, LOW);
+    digitalWrite(Motor3_stp, LOW);
+  }  
+}
+
+// smallAccely not in use
+void smallAccely(int STEPSY) {
+  int delays[STEPSY];
+  //float angle = 1;
+  //float accel = 0.01;
+  float c0 = 15000;  // 2000 * sqrt( 2 * angle / accel ) * 0.67703; = 12340.6 for angle 1, accel 0.02
+  // changes slope of delay against steps graph
+  float lastDelay = 0;
+  int highSpeed = 800; // speed cap
+  for (int i = 0; i < STEPSY; i++) {
+    float d = c0;
+    if ( i > 0 )
+      d = lastDelay - (2 * lastDelay) / (4 * i + 1);
+    if ( d < highSpeed )
+      d = highSpeed;
+    delays[i] = d; //delay between each step
+    lastDelay = d;
+  }
+
+  // use delays from the array, forward (accel)
+  for (int i = 0; i < STEPSY; i++) {
+    digitalWrite(Motor1_stp , HIGH);
+    delayMicroseconds(delays[i] );    
+    digitalWrite(Motor1_stp, LOW);
+  }
+  
+  // use delays from the array, backwards (deaccel)
+  for (int i = 0; i < STEPSY; i++) {
+    digitalWrite(Motor1_stp, HIGH);
+    delayMicroseconds( delays[STEPSY-i-1] );
+    digitalWrite(Motor1_stp, LOW);
+  }  
+}
+
+
+// constant speed only, no acceleration or deceleration
+void constantSpeedx(long STEPSX) {
+  int interval = 200; //speed of motor it think. x milliseconds per step
+  //int steps = 2000; //how far it moves
+  for (long i = 0; i < STEPSX; i++) {
+    digitalWrite(Motor1_stp, HIGH); 
+    digitalWrite(Motor1_stp, LOW);    
+    delayMicroseconds(interval);
+  }
+}
+
+// constant speed only, no acceleration or deceleration
+void constantSpeedy(long STEPSY) {
+  int interval = 200; //speed of motor it think. x milliseconds per step
+  //int steps = 5000; //how far it moves
+  for (long i = 0; i < STEPSY; i++) {
+    digitalWrite(Motor2_stp, HIGH); 
+    digitalWrite(Motor3_stp, HIGH);
+    digitalWrite(Motor2_stp, LOW);  
+    digitalWrite(Motor3_stp, LOW);  
+    delayMicroseconds(interval);
+  }
+}
+
+//////////////////////////// Matlab Communication Functions ///////////////////////////////
+
+// Recieve Serial data from MATLAB
+void record() {
+  static int index=0;
+  static int index2=0;  // this is the index for filling in "receivedChar", this variable does not need to be static, it can be a global variable...
+  char rChar;  //steps
+  char rChar2; //# of points
+  // received character, that is an output of Serial.read() function
+  char tmpSteps[6];
+  char tmpDiv[3];
+  
+  while (Serial.available()>0 && newData==false) {
+    rChar=Serial.read();
+    //rChar2=Serial.read();
+
+    delay(2);
+    
+// Serial.println(Serial.read());
+    if (rChar!=endMarker && index<=8) { 
+      receivedChar[index]=rChar;
+      index++;
+    }
+    else {
+      receivedChar[index]='\0';  // terminate the string 
+      index=0;                   // reset the counter
+      newData=true;              // set the "newData" indicator to true, meaning that the new data has arrived, and we can proceed further
+    }
+  }
+}
+
+// Filter Serial data for measurement length and number of measurements taken
+void execute() {
+  // these two arrays are needed for the "atoi" function
+  char tmpDiv[2];   // this one stores the number of divisions for each axes
+  char tmpSteps[4]; // this one stores the number of steps per full range
+  
+  
+  if (newData==true)
+  {
+     for(int j=0; j<=1; j++)
+     {
+        tmpDiv[j]=receivedChar[j];
+     }
+
+     tmpDiv[2]='\0';
+     Div=atoi(tmpDiv); // number of divisions
+     //converts string to an integer,
+
+     for(int j=0; j<=4; j++)
+     {
+        tmpSteps[j]=receivedChar[j+2];
+     }
+     tmpSteps[5]='\0';
+     distance=atoi(tmpSteps); // distance move across axis
+     
+     delay(1);
+     newData=false;  
+     
+      // to free the buffer  (is something is still there)
+      while (Serial.available()>0)   
+      {
+        Serial.read();
+      } 
+
+  }
+}
+// Returns to MATLAB via Serial port, the total distance per axes, the distance per division
+// & the number of steps taken per divsion 
+
+void sendBack() {
+
+float dis = distance/Div;
+float steps = dis/0.0025;
+
+Serial.println(dis); // Distance between each measurement
+delay(20); 
+Serial.println(Div); // NUmber of measurements taekn
+
+Serial.println(steps); // Nubmber of steps taken between each measurement.
+
+//Serial.write('\r');
+
+    // this is the 'CR' terminator for MATLAB, see the MATLAB code
+}
+
+
+// Return to origin point
+void zero_point(long xcount, long ycount) { // start at bottom right corner
+  
+  char x_direction = HIGH;
+  char y_direction = HIGH; 
+
+  if(xcount != 0) {
+  digitalWrite(Motor1_dir,x_direction);
+  moveX(xcount); 
+  }
+  digitalWrite(Motor2_dir, y_direction);
+  digitalWrite(Motor3_dir, y_direction);
+  moveY(ycount);  
+  
+}
+
+// Function used during precision tests
+void testFunction(long STEPSX) { // start at bottom right corner
+  
+  char x_direction;
+  char y_direction;
+  
+  for(int t = 0; t < 10; t++) {
+  
+  x_direction = LOW;
+  y_direction = LOW; 
+  
+  digitalWrite(Motor1_dir,x_direction);
+  moveX(STEPSX); 
+
+  delay(10000);
+  
+  digitalWrite(Motor2_dir, y_direction);
+  digitalWrite(Motor3_dir, y_direction);
+  moveY(STEPSX);
+
+  delay(10000);
+
+  x_direction = HIGH;
+  y_direction = HIGH; 
+
+  digitalWrite(Motor1_dir,x_direction);
+  moveX(STEPSX); 
+
+  delay(10000);
+  
+  digitalWrite(Motor2_dir, y_direction);
+  digitalWrite(Motor3_dir, y_direction);
+  moveY(STEPSX); 
+
+  delay(10000);
+
+  }
+  
+}
+
+// Function used to determine how long the motors will run for given the number
+// of steps given in x axis
+void timingFcnx(long STEPSX) {
+
+    char x_direction = LOW;
+    
+  
+    
+    
+    xstartMicros = micros();
+
+    digitalWrite(Motor1_dir,x_direction);
+    moveX(STEPSX);
+
+    xendMicros = micros();
+    xtimeDiff = xendMicros - xstartMicros;
+    String xTimeString = String(xtimeDiff);
+    delay(200);
+
+    
+    Serial.println(xTimeString);
+     
+}   // If doesn't work, change one of the function to milli instead of micros
+
+// Function used to determine how long the motors will run for given the number
+// of steps given in y axis
+void timingFcny(long STEPSX) {
+
+    
+    char y_direction = LOW;
+
+
+    ystartMicros = micros();
+
+    digitalWrite(Motor2_dir, y_direction);
+    digitalWrite(Motor3_dir, y_direction);
+    moveY(STEPSX);
+
+    yendMicros = micros();
+    ytimeDiff = yendMicros - ystartMicros;
+    String yTimeString = String(ytimeDiff);
+    delay(200);
+
+    
+    Serial.println(yTimeString);
+     
+}
+
+////////////////////////////////// Main Code ///////////////////////////////////
+
+void loop() {  
+
+  
+  ////////// Used for manually repositioning ////////////
+  // Must insert required number of steps by dividing the lenth (mm) by 0.0025
+  // char x_direction = HIGH;
+  // char y_direction = LOW;
+  
+  // digitalWrite(Motor1_dir,x_direction);
+  // digitalWrite(Motor2_dir, y_direction);
+  // digitalWrite(Motor3_dir, y_direction);
+      
+      
+  // //moveX(20000);
+  // moveY(20000);
+ 
+  // while(true);
+ ///////////////////////////////////////////       
+  // wait for MATLAB to send data via Serial port
+  if(Serial.available() > 0) {    
+
+    record();            
+    execute();            
+    sendBack();      
+
+    long laserRunTime = 15900;  
+
+    delay(400); // Delay to prevent motors from jolting
+       
+    long STEPSX = distance/Div/0.0025; 
+    //int STEPSY = distance;
+    
+
+    // Used to work out timings of STEPSX for X and Y
+    //////////////////////////////
+    // timingFcnx(STEPSX);
+    // delay(200);
+    // timingFcny(STEPSX);
+    // zero_point(STEPSX, STEPSX);
+    //////////////////////////////
+
+
+    int x_points = Div; // number of division in the x axis
+    int y_points = Div; // number of division in the y axis
+    
+    // int x_points = 1; // number of grid points on the x axis
+    // int y_points = 1;
+
+
+    //LOW = towards from motor (clockwise)
+    //HIGH = away from motor (anticlockwise)
+    char x_direction = LOW;
+    char y_direction = LOW;
+    
+    long xcount = 0;
+    long ycount = 0; 
+
+
+    // Trigger variable to notify MATLAB is done
+    // char Run = 'R';
+    // char Done = 'D';  
+
+    
+    //delay(laserRunTime);
+    
+
+    for(int k = 0; k < y_points+1; k++) {      
+      delay(laserRunTime); // Wait for laser to finish set at 15.9 seconds
+      
+       
+      for(int j = 0; j < x_points; j++) {
+        float dis = distance/Div;
+        float steps = dis/0.0025;
+
+        // Serial.println('R');
+              
+        // while(Serial.available() <= 0) {
+        //   // Do nothing until a command is received
+        // }
+        long startMicros = micros();
+        
+        //  char commandx = Serial.read();
+        //  if(commandx == 'A') {    
+        
+        digitalWrite(Motor1_dir,x_direction);      
+        moveX(STEPSX); 
+        
+         
+       
+        //}
+           //Serial.println('R');
+
+         delay(1000);
+        
+
+         long endMicros = micros();
+
+        long timeDiff = endMicros - startMicros;
+        if(k < 1) {
+          Serial.println(timeDiff); // send timings for moveX() run
+        }
+
+        
+
+        //delay(laserRunTime); 
+
+        
+        ////// Used to account for when the number of steps given is less than 2000 ///////
+
+        // if(STEPSX >= 2000) { //if input is 0, it will not move as less than 2000 steps
+        //                      //min. movement 2000 steps = 5mm.
+        //   moveX(STEPSX);
+        // }
+        // else if (0 < STEPSX < 2000) {            
+        //   smallAccelx(STEPSX);
+        // }
+        // else {
+        //   //printf("Error!");
+        //   smallAccelx(STEPSX);
+        // }
+        // else {
+        //   printf("Not working");
+        // }
+        
+        /// xcount used to monitor how far the position of the laser has moved in x direction.
+        /// Variable used laser in zero_point function to return to origin
+        if(x_direction == LOW) {
+          xcount = xcount + STEPSX;
+        } 
+        else if(x_direction == HIGH) {
+          xcount = xcount - STEPSX;
+        }
+      }
+        
+
+       
+      // while(Serial.available() <= 0) {
+      //   // Do nothing till
+      // }
+
+      // Following code changes the direction of x as it reaches end of iteration
+      // and y actuator starts to move
+
+      if(x_direction == HIGH) {
+        x_direction = LOW;
+      }
+      else if(x_direction == LOW) {
+        x_direction = HIGH;
+      }
+      //delay(200);
+
+      
+
+      
+        // char commandy = Serial.read();
+        //  if(commandy == 'A') { 
+
+        digitalWrite(Motor2_dir, y_direction);
+        digitalWrite(Motor3_dir, y_direction);
+        
+        if (k < y_points) {   // Moving in y direction
+          moveY(STEPSX);
+          //Serial.println('R');
+          delay(1000);
+        }
+         //}
+      
+      /// ycount used to monitor how far the position of the laser has moved in y direction.
+      /// Variable used laser in zero_point function to return to origin
+      if(y_direction == LOW) {
+          ycount = ycount + STEPSX;
+        } 
+      else if(y_direction == HIGH) {
+        ycount = ycount - STEPSX;
+      }
+      
+
+      //delay(laserRunTime); 
+      
+    } 
+    
+
+    //Serial.println(xcount);
+    
+    zero_point(xcount, ycount); // Works
+
+    while (true); // stops after all iterations have finished
+    
+  }
+  
+}
+
+///////////////////////////////// End ////////////////////////////////////////
+
+
